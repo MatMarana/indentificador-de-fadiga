@@ -9,6 +9,7 @@
 =============================================================================
 """
 
+# ── Imports ──────────────────────────────────────────────────────────────────
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -20,6 +21,8 @@ import matplotlib.pyplot as plt
 
 from scipy.signal import spectrogram, windows
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+# Usado no cálculo do FFT
 from scipy.ndimage import gaussian_filter1d
 
 # ── Configurações globais ─────────────────────────────────────────────────────
@@ -109,6 +112,8 @@ def calcular_features_fft(janela: np.ndarray, fs: float) -> tuple:
     magnitude_suave = gaussian_filter1d(magnitude, sigma=2)
 
     # 4. Faixa útil do EMG: 20–250 Hz
+    #    Abaixo de 20 Hz: artefatos de movimento
+    #    Acima de 250 Hz: ruído elétrico predominante
     mask      = (freqs >= 20) & (freqs <= 250)
     freqs     = freqs[mask]
     magnitude = magnitude_suave[mask]
@@ -258,11 +263,19 @@ def detectar_ponto_fadiga(
 ) -> tuple[int, float]:
     """
     Detecta o instante de fadiga no score suavizado.
+    "hibrido"  → combina nível normalizado (0.7) + gradiente normalizado (0.3).
+                 Evita detecção precoce causada por picos de derivada em regiões
+                 onde o score ainda está baixo.
+    "derivada" → argmax do gradiente puro (mantido para referência).
+    "limiar"   → primeiro cruzamento do percentil_limiar.
     """
     if metodo == "hibrido":
         grad     = np.gradient(fadiga_suave)
         fadiga_n = (fadiga_suave - fadiga_suave.min()) / (fadiga_suave.max() - fadiga_suave.min() + 1e-8)
         grad_n   = (grad - grad.min()) / (grad.max() - grad.min() + 1e-8)
+        # Aumentar peso do nível (0.85) e reduzir o da derivada (0.15)
+        # → o ponto só é detectado quando o score já está realmente alto,
+        #   não apenas quando está crescendo rápido num nível ainda baixo
         score = 0.85 * fadiga_n + 0.15 * grad_n
         idx   = int(np.argmax(score))
 
@@ -331,7 +344,7 @@ def pinn_loss(
         grad_outputs=torch.ones_like(y_pred),
         create_graph=True,
         retain_graph=True,
-    )[0]
+    )[0]                               # shape: (N, n_features)
 
     # Somente a derivada em relação ao tempo (última coluna)
     # Positiva = fadiga crescendo; negativa = fadiga diminuindo (viola física)
@@ -349,7 +362,7 @@ def pinn_loss(
 
     # ── Perdas ───────────────────────────────────────────────────────────────
     L_data  = nn.MSELoss()(y_pred, y)
-    L_mono  = torch.mean(torch.relu(-df_dt))
+    L_mono  = torch.mean(torch.relu(-df_dt))   # ativa quando df/dt < 0
     L_reg   = torch.mean(d2f_dt2 ** 2)
     L_total = L_data + lambda_mono * L_mono + lambda_reg * L_reg
 
@@ -412,7 +425,7 @@ def gerar_score_para_arquivos(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Calcula o score fisiológico de fadiga para todos os arquivos listados
-    e concatena os resultados.
+    e concatena os resultados — garante alinhamento com carregar_e_extrair.
     """
     scores, tempos = [], []
     for arq in arquivos:
@@ -495,7 +508,7 @@ def plotar_metricas_simples(
     nomes_canais: list,
     nome_arquivo: str,
 ) -> None:
-    """Métricas temporais e espectrais por canal"""
+    """Métricas temporais e espectrais por canal — para um arquivo de teste."""
     metricas_labels = [
         ("rms",         "RMS (V)"),
         ("mav",         "MAV (V)"),
@@ -536,7 +549,7 @@ def plotar_metricas_simples(
     plt.savefig(fname, dpi=150, bbox_inches="tight",
                 facecolor=plt.rcParams["figure.facecolor"])
     plt.show()
-    print(f"Salvo: {fname}")
+    print(f"[✓] Salvo: {fname}")
 
 
 def plotar_fft_e_espectrograma(
@@ -602,7 +615,7 @@ def plotar_fft_e_espectrograma(
                     facecolor=plt.rcParams["figure.facecolor"])
         plt.show()
 
-    print(f"FFT e espectrogramas salvos para {nome_arquivo}")
+    print(f"[✓] FFT e espectrogramas salvos para {nome_arquivo}")
 
 
 def plotar_curva_fadiga_teste(
@@ -669,7 +682,7 @@ def plotar_curva_fadiga_teste(
     plt.savefig(fname, dpi=150, bbox_inches="tight",
                 facecolor=plt.rcParams["figure.facecolor"])
     plt.show()
-    print(f"Salvo: {fname}")
+    print(f"[✓] Salvo: {fname}")
 
 
 # =============================================================================
@@ -743,7 +756,7 @@ def main():
 
         # Detecção fisiológica no arquivo de teste
         idx_fisio, tempo_fadiga_fisio = detectar_ponto_fadiga(
-            fadiga_suave_t, t_janelas_t, metodo="hibrido"
+            fadiga_suave_t, t_janelas_t, metodo="hibrido"   # ← era "derivada"
         )
 
         # Predição da PINN no arquivo de teste
@@ -765,7 +778,7 @@ def main():
 
         # Detecção pela PINN
         idx_pinn, tempo_fadiga_pinn = detectar_ponto_fadiga(
-            pred_t_suave, t_janelas_t[:n_t], metodo="hibrido"
+            pred_t_suave, t_janelas_t[:n_t], metodo="hibrido"     # ← era "derivada"
         )
         # Comparação PINN vs Fisiológico
         comparar_pinn_vs_fisiologico(
@@ -791,7 +804,7 @@ def main():
             nome_arq,
         )
 
-    print("\nFinalizado com sucesso!")
+    print("\n[✓] Pipeline finalizado com sucesso!")
 
 
 # =============================================================================

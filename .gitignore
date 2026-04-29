@@ -1,9 +1,2 @@
 .venv/
 _pycache/
-
-
-modelo_v1.py
-modelo_v3.py
-modelo_v4.py
-modelo_v5.py
-modelo_v6.py
