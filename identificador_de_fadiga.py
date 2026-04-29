@@ -2,7 +2,7 @@
 =============================================================================
  DETECÇÃO DE FADIGA MUSCULAR VIA EMG COM PINN
 =============================================================================
- Autores  : Mateus Marana Assuena    
+ Autores  : Mateus Marana Assuena
  Descrição: Extrai features do sinal EMG (RMS, MAV, ZCR, FFT, Espectrograma)
              e treina uma Physics-Informed Neural Network (PINN) para
              identificar o instante de fadiga muscular.
@@ -19,7 +19,6 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 
 from scipy.signal import spectrogram, windows
 from sklearn.metrics import mean_squared_error, classification_report
@@ -63,24 +62,23 @@ LAMBDA_MONO  = 0.1   # peso da perda de monotonicidade (física)
 LAMBDA_REG   = 0.01  # peso da regularização L2 (suavidade)
 LIMIAR_FADIGA = 0.7  # limiar de classificação binária de fadiga
 
-# Paleta de cores por arquivo
-CORES_ARQUIVO = ["#58A6FF", "#3FB950", "#F78166", "#D2A8FF", "#FFA657", "#79C0FF"]
-
-# Estilo escuro global
+# Estilo dos gráficos
 plt.rcParams.update({
-    "figure.facecolor":  "#0D1117",
-    "axes.facecolor":    "#161B22",
-    "axes.edgecolor":    "#30363D",
-    "axes.labelcolor":   "#C9D1D9",
-    "xtick.color":       "#C9D1D9",
-    "ytick.color":       "#C9D1D9",
-    "text.color":        "#C9D1D9",
-    "grid.color":        "#21262D",
-    "grid.linestyle":    "--",
-    "grid.alpha":        0.5,
+    "figure.facecolor": "#0D1117",
+    "axes.facecolor":   "#161B22",
+    "axes.edgecolor":   "#30363D",
+    "axes.labelcolor":  "#C9D1D9",
+    "xtick.color":      "#C9D1D9",
+    "ytick.color":      "#C9D1D9",
+    "text.color":       "#C9D1D9",
+    "grid.color":       "#21262D",
+    "grid.linestyle":   "--",
+    "grid.alpha":       0.5,
     "legend.framealpha": 0.3,
-    "font.family":       "monospace",
+    "font.family":      "monospace",
 })
+
+CORES_MUSCULO = ["#58A6FF", "#3FB950", "#F78166", "#D2A8FF"]
 
 
 # =============================================================================
@@ -350,17 +348,133 @@ def treinar_modelo(
     print("─" * 50)
     return modelo, historico
 
+# =============================================================================
+# BLOCO 2-A — ÍNDICE DE FADIGA FISIOLÓGICO (substitui o limiar fixo)
+# =============================================================================
+
+def calcular_indice_fadiga_fisiologico(
+    features_por_canal: list,
+    pesos: dict | None = None,
+    janela_suavizacao: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Constrói um índice de fadiga muscular baseado nas features fisiológicas
+    reais do sinal EMG, sem depender de limiar fixo ou tempo normalizado.
+
+    Lógica fisiológica por feature
+    ───────────────────────────────────────────────────────────────────────────
+    Aumentam com fadiga  → usadas diretamente (RMS, MAV, spec_energia)
+    Diminuem com fadiga  → invertidas com (1 - x_norm):
+        ZCR              : queda de conteúdo espectral médio
+        fft_media (MNF)  : compressão espectral para baixas frequências
+        fft_mediana (MDF): idem — preditor mais robusto que MNF
+        spec_freq_dom    : frequência dominante do espectrograma também cai
+
+    Parâmetros
+    ──────────────────────────────────────────────────────────────────────────
+    features_por_canal  : lista de dicts gerados por calcular_features_janela
+    pesos               : pesos de cada feature (None → defaults abaixo)
+    janela_suavizacao   : largura da janela do rolling mean (amostras)
+
+    Retorna
+    ──────────────────────────────────────────────────────────────────────────
+    fadiga_score : np.ndarray (n_janelas,) — índice em [0, 1]
+    fadiga_suave : np.ndarray (n_janelas,) — versão suavizada do score
+    """
+    if pesos is None:
+        pesos = {
+            "rms":          1.0,
+            "mav":          1.0,
+            "zcr":          1.2,   # ZCR cai com fadiga — peso moderado
+            "fft_media":    1.0,   # MNF
+            "fft_mediana":  1.5,   # MDF — preditor mais estável
+            "spec_energia": 0.8,
+            "spec_freq_dom": 1.2,
+        }
+
+    peso_total = sum(pesos.values())
+
+    def _norm(x: np.ndarray) -> np.ndarray:
+        """Min-max para [0, 1] com estabilidade numérica."""
+        rng = x.max() - x.min()
+        return (x - x.min()) / (rng + 1e-8)
+
+    scores_canais = []
+
+    for res in features_por_canal:
+        rms_n   = _norm(res["rms"])
+        mav_n   = _norm(res["mav"])
+        zcr_n   = 1.0 - _norm(res["zcr"])          # inverte (cai com fadiga)
+        mnf_n   = 1.0 - _norm(res["fft_media"])     # inverte
+        mdf_n   = 1.0 - _norm(res["fft_mediana"])   # inverte — mais peso
+        spe_n   = _norm(res["spec_energia"])
+        spf_n   = 1.0 - _norm(res["spec_freq_dom"]) # inverte
+
+        score = (
+            pesos["rms"]          * rms_n  +
+            pesos["mav"]          * mav_n  +
+            pesos["zcr"]          * zcr_n  +
+            pesos["fft_media"]    * mnf_n  +
+            pesos["fft_mediana"]  * mdf_n  +
+            pesos["spec_energia"] * spe_n  +
+            pesos["spec_freq_dom"]* spf_n
+        ) / peso_total
+
+        scores_canais.append(score)
+
+    # Média entre músculos → índice global de fadiga
+    fadiga_score = np.mean(scores_canais, axis=0)
+
+    # Normalização final para garantir [0, 1] mesmo após a média
+    fadiga_score = _norm(fadiga_score)
+
+    # Suavização por rolling mean centrado
+    fadiga_suave = (
+        pd.Series(fadiga_score)
+        .rolling(janela_suavizacao, center=True, min_periods=1)
+        .mean()
+        .values
+    )
+
+    return fadiga_score, fadiga_suave
+
+
+def detectar_ponto_fadiga(
+    fadiga_suave: np.ndarray,
+    tempo: np.ndarray,
+    metodo: str = "derivada",
+    percentil_limiar: float = 75.0,
+) -> tuple[int, float]:
+    """
+    Encontra o instante de fadiga a partir do score fisiológico suavizado.
+
+    Métodos disponíveis
+    ────────────────────────────────────────────────────────────────────────
+    "derivada"  — ponto de maior crescimento (argmax do gradiente).
+                  Funciona bem quando há transição clara de fadiga.
+    "limiar"    — primeiro instante em que score cruza percentil_limiar%.
+                  Útil quando o score cresce gradualmente sem pico de derivada.
+
+    Retorna (índice_da_janela, tempo_em_segundos)
+    """
+    if metodo == "derivada":
+        derivada = np.gradient(fadiga_suave)
+        idx = int(np.argmax(derivada))
+
+    elif metodo == "limiar":
+        limiar = np.percentile(fadiga_suave, percentil_limiar)
+        acima  = np.where(fadiga_suave >= limiar)[0]
+        idx    = int(acima[0]) if len(acima) > 0 else int(np.argmax(fadiga_suave))
+
+    else:
+        raise ValueError(f"Método desconhecido: {metodo!r}. Use 'derivada' ou 'limiar'.")
+
+    return idx, float(tempo[idx])
+
 
 # =============================================================================
 # BLOCO 3 — GRÁFICOS
 # =============================================================================
-
-def _banda_arquivos(ax, limites, alpha=0.06):
-    """Faixas verticais alternadas para separar arquivos no eixo de tempo."""
-    for i, (t0, t1, _) in enumerate(limites):
-        if i % 2 == 0:
-            ax.axvspan(t0, t1, color="#FFFFFF", alpha=alpha, lw=0)
-        ax.axvline(t0, color="#30363D", linewidth=0.6, alpha=0.8)
 
 def _marca_fadiga(ax, tempo_fadiga: float, **kwargs):
     """Adiciona linha vertical de fadiga e anotação em qualquer eixo."""
@@ -375,210 +489,207 @@ def _marca_fadiga(ax, tempo_fadiga: float, **kwargs):
     )
 
 
-def plotar_pagina1_metricas(arquivos, tempo_fadiga, pasta="dados_coleta_mateus"):
+def plotar_metricas_simples(
+    t: np.ndarray,
+    features_por_canal: list,
+    tempo_fadiga: float,
+    nomes_canais: list,
+):
     """
-    Figura 1 — RMS, MAV e ZCR para cada arquivo de treino.
-    Colunas = arquivos | Linhas = métricas.
-    Eixo X em segundos reais (tempo acumulado global).
-    Cada arquivo usa a média dos 4 canais EMG para representatividade.
+    Página 1 — Métricas temporais simples (RMS, MAV, ZCR) e espectrais (FFT)
+    para cada canal EMG. Tudo em uma única figura organizada.
     """
-    n_arqs   = len(arquivos)
-    metricas = [("rms", "RMS (V)"), ("mav", "MAV (V)"), ("zcr", "ZCR")]
-    n_met    = len(metricas)
+    n_canais = len(features_por_canal)
 
-    fig, axes = plt.subplots(n_met, n_arqs,
-                             figsize=(4.5 * n_arqs, 3 * n_met),
-                             sharey="row")
-    fig.suptitle("Página 1 — Métricas Temporais por Arquivo",
-                 fontsize=14, fontweight="bold", y=1.01)
+    # Layout: 4 colunas (canais) × 6 linhas (métricas)
+    metricas_labels = [
+        ("rms",         "RMS (V)"),
+        ("mav",         "MAV (V)"),
+        ("zcr",         "ZCR"),
+        ("fft_media",   "Freq. Média (Hz)"),
+        ("fft_mediana", "Freq. Mediana (Hz)"),
+        ("fft_desvio",  "Desvio Espectral"),
+    ]
 
-    offset = 0.0
-    for col, arq in enumerate(arquivos):
-        df    = pd.read_csv(f"{pasta}/{arq}")
-        tempo = df["X [s]"].values
-        fs    = 1.0 / np.mean(np.diff(tempo))
-        dur   = tempo[-1] - tempo[0]
-        cor   = CORES_ARQUIVO[col % len(CORES_ARQUIVO)]
+    n_met = len(metricas_labels)
+    fig, axes = plt.subplots(
+        n_met, n_canais,
+        figsize=(5 * n_canais, 2.8 * n_met),
+        sharex=True,
+    )
+    fig.suptitle("Métricas EMG por Canal Muscular", fontsize=16, y=1.01, fontweight="bold")
 
-        # Média dos 4 canais EMG para cada feature
-        rms_list, mav_list, zcr_list, t_list = [], [], [], []
-        for nome_emg in EMG_NOMES:
-            res = calcular_features_janela(df[nome_emg].values, fs, JANELA_SEGUNDOS)
-            rms_list.append(res["rms"])
-            mav_list.append(res["mav"])
-            zcr_list.append(res["zcr"])
-            t_list.append(res["tempo_medio"])
-
-        # Tempo global acumulado para este arquivo
-        t_jan  = (t_list[0] - t_list[0][0]) + offset
-        dados  = {
-            "rms": np.mean(rms_list, axis=0),
-            "mav": np.mean(mav_list, axis=0),
-            "zcr": np.mean(zcr_list, axis=0),
-        }
-
-        for row, (chave, label) in enumerate(metricas):
-            ax = axes[row][col] if n_arqs > 1 else axes[row]
-            ax.plot(t_jan, dados[chave], color=cor, linewidth=1.4)
-            ax.fill_between(t_jan, dados[chave], alpha=0.12, color=cor)
-            _marca_fadiga(ax, tempo_fadiga, label=(row == 0 and col == 0))
+    for col, (res, nome_canal, cor) in enumerate(
+        zip(features_por_canal, nomes_canais, CORES_MUSCULO)
+    ):
+        for row, (chave, label) in enumerate(metricas_labels):
+            ax = axes[row][col]
+            ax.plot(t, res[chave], color=cor, linewidth=1.2, alpha=0.9)
             ax.grid(True)
-            ax.set_xlim(t_jan[0], t_jan[-1])
 
+            # Título do canal apenas na linha do topo
             if row == 0:
-                nome_curto = arq.replace(".csv", "")
-                ax.set_title(nome_curto, fontsize=9, color=cor, fontweight="bold")
+                ax.set_title(nome_canal, fontsize=9, color=cor, fontweight="bold")
+
+            # Label do eixo Y apenas na coluna da esquerda
             if col == 0:
-                ax.set_ylabel(label, fontsize=9)
+                ax.set_ylabel(label, fontsize=8)
+
+            # Marca de fadiga
+            ylim = ax.get_ylim()
+            ax.axvline(tempo_fadiga, color="#FF4B4B", linestyle="--", linewidth=1.2, alpha=0.8)
+
+            # Label do eixo X apenas na última linha
             if row == n_met - 1:
                 ax.set_xlabel("Tempo (s)", fontsize=8)
-            if row == 0 and col == 0:
-                ax.legend(fontsize=7, loc="upper left")
-
-        offset += dur
 
     plt.tight_layout()
-    plt.savefig("pagina1_metricas.png", dpi=150, bbox_inches="tight",
+    plt.savefig("metricas_simples.png", dpi=150, bbox_inches="tight",
                 facecolor=plt.rcParams["figure.facecolor"])
     plt.show()
-    print("[✓] pagina1_metricas.png salvo")
+    print("[✓] Figura salva: metricas_simples.png")
 
 
-def plotar_pagina2_fft_espectrograma(arquivos, tempo_fadiga,
-                                      pasta="dados_coleta_mateus"):
+def plotar_fft_e_espectrograma(
+    df_list: list,
+    nomes_arquivos: list,
+    tempo_fadiga: float,
+):
     """
-    Figura 2 — FFT do sinal e Espectrograma por arquivo.
-    Linha 1: FFT (domínio da frequência).
-    Linha 2: Espectrograma (tempo × frequência).
-    Marca de fadiga aparece no espectrograma quando dentro do intervalo.
+    Página 2 — FFT completo do sinal + Espectrograma estilo MATLAB
+    para cada canal EMG. Inclui marca de fadiga onde aplicável.
     """
     Fs       = 1925.93
-    nwin     = int(1.0 * Fs)
+    Tjan     = 1.0
+    nwin     = int(Tjan * Fs)
     win_ham  = windows.hamming(nwin)
     noverlap = nwin // 2
-    n_arqs   = len(arquivos)
 
-    fig, axes = plt.subplots(2, n_arqs,
-                             figsize=(5 * n_arqs, 7),
-                             gridspec_kw={"hspace": 0.4})
-    fig.suptitle("Página 2 — FFT e Espectrograma por Arquivo",
-                 fontsize=14, fontweight="bold", y=1.01)
+    for idx_emg, nome_emg in enumerate(EMG_NOMES):
+        nome_curto = nome_emg.split(":")[0].replace("R ", "")
+        cor = CORES_MUSCULO[idx_emg]
 
-    offset = 0.0
-    for col, arq in enumerate(arquivos):
-        df    = pd.read_csv(f"{pasta}/{arq}")
-        tempo = df["X [s]"].values
-        dur   = tempo[-1] - tempo[0]
-        cor   = CORES_ARQUIVO[col % len(CORES_ARQUIVO)]
+        # ── FFT do primeiro arquivo de treino ────────────────────────────
+        fig_fft, ax_fft = plt.subplots(figsize=(11, 3.5))
+        fig_fft.suptitle(f"FFT — {nome_curto}", fontsize=13, fontweight="bold")
 
-        # Média dos canais EMG para representar o arquivo
-        sinal = np.mean([df[n].values for n in EMG_NOMES], axis=0)
-        sinal = sinal - sinal.mean()
+        for df_temp, nome_arq in zip(df_list, nomes_arquivos):
+            if nome_emg not in df_temp.columns:
+                continue
+            sinal = df_temp[nome_emg].values - df_temp[nome_emg].mean()
+            N     = len(sinal)
+            S     = np.fft.fft(sinal)
+            freqs = np.fft.fftfreq(N, d=1 / Fs)
+            mask  = (freqs >= 0) & (freqs <= 500)
+            ax_fft.plot(freqs[mask], np.abs(S)[mask], linewidth=0.8,
+                        alpha=0.7, label=nome_arq)
 
-        nome_curto = arq.replace(".csv", "")
-        ax_fft = axes[0][col] if n_arqs > 1 else axes[0]
-        ax_sp  = axes[1][col] if n_arqs > 1 else axes[1]
-
-        # ── FFT ─────────────────────────────────────────────────────────
-        N     = len(sinal)
-        S     = np.fft.fft(sinal)
-        freqs = np.fft.fftfreq(N, d=1 / Fs)
-        mask  = (freqs >= 0) & (freqs <= 400)
-
-        ax_fft.plot(freqs[mask], np.abs(S)[mask], color=cor, linewidth=0.9)
-        ax_fft.fill_between(freqs[mask], np.abs(S)[mask], alpha=0.15, color=cor)
-        ax_fft.set_title(nome_curto, fontsize=9, color=cor, fontweight="bold")
-        ax_fft.set_xlabel("Frequência (Hz)", fontsize=8)
+        ax_fft.set_xlabel("Frequência (Hz)")
+        ax_fft.set_ylabel("Amplitude")
+        ax_fft.legend(fontsize=7, ncol=2)
         ax_fft.grid(True)
-        if col == 0:
-            ax_fft.set_ylabel("Amplitude", fontsize=9)
+        plt.tight_layout()
+        plt.savefig(f"fft_{idx_emg+1}.png", dpi=150, bbox_inches="tight",
+                    facecolor=plt.rcParams["figure.facecolor"])
+        plt.show()
 
-        # ── Espectrograma ────────────────────────────────────────────────
-        f, t_sp, Sxx = spectrogram(
-            sinal, fs=Fs, window=win_ham,
-            nperseg=nwin, noverlap=noverlap,
-            nfft=nwin, scaling="density", mode="magnitude",
+        # ── Espectrograma por arquivo ────────────────────────────────────
+        n_arqs = len(df_list)
+        fig_sp, axes_sp = plt.subplots(
+            1, n_arqs,
+            figsize=(5 * n_arqs, 4),
+            sharey=True,
         )
-        mask_f = f <= 250
-        Sxx    = Sxx[mask_f, :] / (Sxx[mask_f, :].max() + 1e-8)
+        fig_sp.suptitle(f"Espectrograma — {nome_curto}", fontsize=13, fontweight="bold")
 
-        img = ax_sp.pcolormesh(t_sp, f[mask_f], Sxx,
-                               shading="gouraud", cmap="inferno")
-        plt.colorbar(img, ax=ax_sp, label="Ampl. norm.", pad=0.02)
+        if n_arqs == 1:
+            axes_sp = [axes_sp]
 
-        # Marca de fadiga no tempo relativo ao arquivo
-        t_fadiga_local = tempo_fadiga - offset
-        if 0 <= t_fadiga_local <= dur:
-            ax_sp.axvline(t_fadiga_local, color="#00FFFF", linestyle="--",
-                          linewidth=1.5, label=f"Fadiga {tempo_fadiga:.1f}s")
-            ax_sp.legend(fontsize=7, loc="upper right")
+        for i, (df_temp, nome_arq) in enumerate(zip(df_list, nomes_arquivos)):
+            ax = axes_sp[i]
 
-        ax_sp.set_xlabel("Tempo (s)", fontsize=8)
-        if col == 0:
-            ax_sp.set_ylabel("Freq. (Hz)", fontsize=8)
+            if nome_emg not in df_temp.columns:
+                ax.set_visible(False)
+                continue
 
-        offset += dur
+            sinal = df_temp[nome_emg].values - df_temp[nome_emg].mean()
 
-    plt.tight_layout()
-    plt.savefig("pagina2_fft_espectrograma.png", dpi=150, bbox_inches="tight",
-                facecolor=plt.rcParams["figure.facecolor"])
-    plt.show()
-    print("[✓] pagina2_fft_espectrograma.png salvo")
+            f, t_spec, Sxx = spectrogram(
+                sinal, fs=Fs,
+                window=win_ham,
+                nperseg=nwin,
+                noverlap=noverlap,
+                nfft=nwin,
+                scaling="density",
+                mode="magnitude",
+            )
+
+            # Limitar a 250 Hz
+            mask = f <= 250
+            f    = f[mask]
+            Sxx  = Sxx[mask, :]
+            Sxx  = Sxx / (Sxx.max() + 1e-8)
+
+            img = ax.pcolormesh(t_spec, f, Sxx, shading="gouraud", cmap="inferno")
+            ax.axvline(tempo_fadiga, color="#00FFFF", linestyle="--",
+                       linewidth=1.4, label=f"Fadiga {tempo_fadiga:.1f}s")
+            ax.set_title(nome_arq, fontsize=8)
+            ax.set_xlabel("Tempo (s)")
+            if i == 0:
+                ax.set_ylabel("Frequência (Hz)")
+            plt.colorbar(img, ax=ax, label="Amplitude norm.")
+
+        plt.tight_layout()
+        plt.savefig(f"espectrograma_{idx_emg+1}.png", dpi=150, bbox_inches="tight",
+                    facecolor=plt.rcParams["figure.facecolor"])
+        plt.show()
+
+    print("[✓] Figuras FFT e Espectrograma salvas.")
 
 
-def plotar_fadiga_e_convergencia(t, fadiga_suave, tempo_fadiga,
-                                  limites, historico):
+def plotar_curva_fadiga(
+    t: np.ndarray,
+    fadiga_suave: np.ndarray,
+    tempo_fadiga: float,
+    historico: dict,
+):
     """
-    Figura 3 — Índice de fadiga ao longo do tempo global e histórico de perda.
-    Faixas verticais alternadas indicam os limites de cada arquivo de treino.
+    Figura final — Curva de fadiga predita e histórico de perdas da PINN.
     """
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-    fig.suptitle("PINN — Resultado e Convergência",
-                 fontsize=14, fontweight="bold")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    fig.suptitle("PINN — Resultado e Convergência", fontsize=14, fontweight="bold")
 
-    # ── Curva de fadiga ──────────────────────────────────────────────────
+    # Curva de fadiga
     ax1 = axes[0]
-    _banda_arquivos(ax1, limites)
-    ax1.plot(t, fadiga_suave, color="#58A6FF", linewidth=2,
-             label="Índice de fadiga", zorder=3)
-    ax1.fill_between(t, fadiga_suave, alpha=0.12, color="#58A6FF", zorder=2)
-    _marca_fadiga(ax1, tempo_fadiga)
-
-    # Legenda: um patch colorido por arquivo
-    patches = [
-        mpatches.Patch(color=CORES_ARQUIVO[i % len(CORES_ARQUIVO)],
-                       label=nome.replace(".csv",""), alpha=0.7)
-        for i, (_, _, nome) in enumerate(limites)
-    ]
-    patches.append(
-        plt.Line2D([0],[0], color="#FF4B4B", linestyle="--",
-                   label=f"Fadiga: {tempo_fadiga:.1f}s")
-    )
-    ax1.legend(handles=patches, fontsize=7, ncol=2, loc="upper left")
-    ax1.set_xlabel("Tempo acumulado (s)")
-    ax1.set_ylabel("Índice de Fadiga")
+    ax1.plot(t, fadiga_suave, color="#58A6FF", linewidth=1.8, label="Índice de fadiga")
+    ax1.axvline(tempo_fadiga, color="#FF4B4B", linestyle="--",
+                linewidth=2, label=f"Fadiga detectada: {tempo_fadiga:.2f}s")
+    ax1.fill_between(t, fadiga_suave, alpha=0.15, color="#58A6FF")
+    ax1.set_xlabel("Tempo (s)")
+    ax1.set_ylabel("Índice de Fadiga (normalizado)")
     ax1.set_title("Detecção de Fadiga Muscular")
+    ax1.legend()
     ax1.grid(True)
 
-    # ── Histórico de perda ───────────────────────────────────────────────
+    # Histórico de perda
     ax2 = axes[1]
-    ep  = range(len(historico["total"]))
-    ax2.plot(ep, historico["total"], color="#58A6FF", label="L total",  lw=1.8)
-    ax2.plot(ep, historico["data"],  color="#3FB950", label="L data",   lw=1.2, alpha=0.85)
-    ax2.plot(ep, historico["mono"],  color="#F78166", label="L mono",   lw=1.2, alpha=0.85)
-    ax2.plot(ep, historico["reg"],   color="#D2A8FF", label="L reg",    lw=1.2, alpha=0.85)
+    epocas = range(len(historico["total"]))
+    ax2.plot(epocas, historico["total"], color="#58A6FF",  label="L total",  linewidth=1.5)
+    ax2.plot(epocas, historico["data"],  color="#3FB950",  label="L data",   linewidth=1.2, alpha=0.85)
+    ax2.plot(epocas, historico["mono"],  color="#F78166",  label="L mono",   linewidth=1.2, alpha=0.85)
+    ax2.plot(epocas, historico["reg"],   color="#D2A8FF",  label="L reg",    linewidth=1.2, alpha=0.85)
     ax2.set_yscale("log")
     ax2.set_xlabel("Época")
-    ax2.set_ylabel("Loss (escala log)")
+    ax2.set_ylabel("Loss (log)")
     ax2.set_title("Convergência da PINN")
-    ax2.legend(fontsize=8)
+    ax2.legend()
     ax2.grid(True)
 
     plt.tight_layout()
     plt.savefig("curva_fadiga_pinn.png", dpi=150, bbox_inches="tight",
                 facecolor=plt.rcParams["figure.facecolor"])
     plt.show()
-    print("[✓] curva_fadiga_pinn.png salvo")
+    print("[✓] Figura salva: curva_fadiga_pinn.png")
 
 
 # =============================================================================
@@ -594,42 +705,6 @@ def carregar_e_extrair(arquivos: list, pasta: str = "dados_coleta_mateus") -> tu
         X_list.append(X)
         t_list.append(t)
     return np.vstack(X_list), np.concatenate(t_list)
-
-def carregar_arquivos(arquivos: list, pasta: str = "dados_coleta_mateus") -> tuple:
-    """
-    Carrega múltiplos CSVs e constrói um eixo de tempo GLOBAL contínuo.
-
-    *** CORREÇÃO DO GRÁFICO FRAGMENTADO ***
-    Cada arquivo começa onde o anterior terminou (offset acumulado),
-    em vez de resetar o tempo para zero. Isso garante uma curva de
-    fadiga contínua e sem segmentos desconexos.
-
-    Retorna:
-      X           : (N_total, n_features)
-      t_global    : (N_total,) tempo real acumulado em segundos
-      limites_arq : lista de (t_inicio, t_fim, nome_arquivo)
-  plotar_metricas_simples  """
-    X_list, t_list, limites = [], [], []
-    offset = 0.0
-
-    for arq in arquivos:
-        df    = pd.read_csv(f"{pasta}/{arq}")
-        tempo = df["X [s]"].values
-        dur   = tempo[-1] - tempo[0]
-
-        X, t_jan = extrair_features_df(df, tempo)
-
-        # Normaliza tempo local para [0, dur] e soma offset global
-        t_local  = t_jan - t_jan[0]
-        t_global = t_local + offset
-
-        limites.append((offset, offset + dur, arq))
-        offset += dur
-
-        X_list.append(X)
-        t_list.append(t_global)
-
-    return np.vstack(X_list), np.concatenate(t_list), limites
 
 
 def normalizar_tempo(t: np.ndarray) -> np.ndarray:
@@ -658,63 +733,82 @@ def main():
     # ─── TREINO ──────────────────────────────────────────────────────────────
     print("\n[1/4] Extraindo features de TREINO...")
     X, t = carregar_e_extrair(ARQUIVOS_TREINO)
-    _, t_global, limites_treino = carregar_arquivos(ARQUIVOS_TREINO)
     print(f"      Shape: {X.shape}")
 
-    t_norm = normalizar_tempo(t).reshape(-1, 1)
-    X_aug  = np.hstack([X, t_norm])
+    # ── NOVO: target baseado em features fisiológicas, não em tempo ──────────
+    df_treino_0 = pd.read_csv(f"dados_coleta_mateus/{ARQUIVOS_TREINO[0]}")
+    tempo_0     = df_treino_0["X [s]"].values
+    fs_0        = 1.0 / np.mean(np.diff(tempo_0))
 
-    X_tensor = torch.tensor(X_aug,  dtype=torch.float32)
-    y_tensor = torch.tensor(t_norm, dtype=torch.float32)
+    features_por_canal_treino = [
+        calcular_features_janela(df_treino_0[nome].values, fs_0, JANELA_SEGUNDOS)
+        for nome in EMG_NOMES
+    ]
+
+    fadiga_score_treino, fadiga_suave_treino = calcular_indice_fadiga_fisiologico(
+        features_por_canal_treino
+    )
+    # target da PINN: score fisiológico (não mais t_norm)
+    y_fisio = fadiga_score_treino.reshape(-1, 1)
+
+    # Alinhar X ao tamanho do score (X pode ter mais janelas se concatenou arquivos)
+    n = min(len(X), len(y_fisio))
+    X_alinhado = X[:n]
+    t_alinhado = t[:n]
+
+    t_norm     = normalizar_tempo(t_alinhado).reshape(-1, 1)
+    X_aug      = np.hstack([X_alinhado, t_norm])
+
+    X_tensor = torch.tensor(X_aug,   dtype=torch.float32)
+    y_tensor = torch.tensor(y_fisio[:n], dtype=torch.float32)  # <── score real
 
     # ─── TREINAMENTO DA PINN ─────────────────────────────────────────────────
     print("\n[2/4] Treinando PINN...")
     modelo, historico = treinar_modelo(X_tensor, y_tensor)
 
-    # Predição e detecção do ponto de fadiga
-    with torch.no_grad():
-        pred_treino = modelo(X_tensor).numpy().flatten()
-
-    fadiga_suave = pd.Series(pred_treino).rolling(5, center=True, min_periods=1).mean().values
-    dfadiga      = np.gradient(fadiga_suave)
-    ponto_fadiga = np.argmax(dfadiga)
-    tempo_fadiga = t[ponto_fadiga]
-
-    print(f"\n  ▶ Fadiga detectada em: {tempo_fadiga:.2f} segundos")
+    # Detecção do ponto de fadiga pelo score fisiológico (não por limiar fixo)
+    idx_fadiga, tempo_fadiga = detectar_ponto_fadiga(
+        fadiga_suave_treino,
+        t_alinhado,
+        metodo="derivada",         # troque por "limiar" se preferir
+    )
+    print(f"\n  ▶ Fadiga detectada em: {tempo_fadiga:.2f} s  (janela #{idx_fadiga})")
 
     # ─── VALIDAÇÃO E TESTE ───────────────────────────────────────────────────
     print("\n[3/4] Avaliando modelo...")
 
-    for nome, arquivos in [("VALIDAÇÃO", ARQUIVOS_VALIDACAO), ("TESTE", ARQUIVOS_TESTE)]:
+    for nome_conj, arquivos in [("VALIDAÇÃO", ARQUIVOS_VALIDACAO), ("TESTE", ARQUIVOS_TESTE)]:
         X_ev, t_ev = carregar_e_extrair(arquivos)
-        t_norm_ev  = normalizar_tempo(t_ev)
-        X_ev_aug   = np.hstack([X_ev, t_norm_ev.reshape(-1, 1)])
+
+        # Score fisiológico do conjunto de avaliação (para MSE real)
+        df_ev_0 = pd.read_csv(f"dados_coleta_mateus/{arquivos[0]}")
+        tempo_ev_0 = df_ev_0["X [s]"].values
+        fs_ev = 1.0 / np.mean(np.diff(tempo_ev_0))
+        feats_ev = [
+            calcular_features_janela(df_ev_0[nome].values, fs_ev, JANELA_SEGUNDOS)
+            for nome in EMG_NOMES
+        ]
+        score_ev, _ = calcular_indice_fadiga_fisiologico(feats_ev)
+        n_ev = min(len(X_ev), len(score_ev))
+
+        t_norm_ev = normalizar_tempo(t_ev[:n_ev])
+        X_ev_aug  = np.hstack([X_ev[:n_ev], t_norm_ev.reshape(-1, 1)])
         X_ev_tensor = torch.tensor(X_ev_aug, dtype=torch.float32)
-        avaliar_conjunto(modelo, X_ev_tensor, t_norm_ev, nome)
+
+        # Agora MSE é contra o score fisiológico — não contra tempo
+        avaliar_conjunto(modelo, X_ev_tensor, score_ev[:n_ev], nome_conj)
 
     # ─── GRÁFICOS ────────────────────────────────────────────────────────────
     print("\n[4/4] Gerando gráficos...")
-
-    # Calcula features por canal separadamente para plots
-    df_treino_0 = pd.read_csv(f"dados_coleta_mateus/{ARQUIVOS_TESTE[0]}")
-    tempo_0     = df_treino_0["X [s]"].values
-    fs_0        = 1.0 / np.mean(np.diff(tempo_0))
-
+    t_janelas = features_por_canal_treino[0]["tempo_medio"]
     nomes_curtos = [n.split(":")[0].replace("R ", "") for n in EMG_NOMES]
-    features_por_canal = [
-        calcular_features_janela(df_treino_0[nome].values, fs_0, JANELA_SEGUNDOS)
-        for nome in EMG_NOMES
-    ]
-    t_janelas = features_por_canal[0]["tempo_medio"]
 
-    # Página 1: métricas simples
-    plotar_pagina1_metricas(ARQUIVOS_TESTE, tempo_fadiga)
+    plotar_metricas_simples(t_janelas, features_por_canal_treino, tempo_fadiga, nomes_curtos)
 
-    # Página 2: FFT e espectrograma (arquivos de treino)
-    plotar_pagina2_fft_espectrograma(ARQUIVOS_TESTE, tempo_fadiga)
+    dfs_treino = [pd.read_csv(f"dados_coleta_mateus/{arq}") for arq in ARQUIVOS_TREINO]
+    plotar_fft_e_espectrograma(dfs_treino, ARQUIVOS_TREINO, tempo_fadiga)
 
-    # Curva de fadiga + convergência
-    plotar_fadiga_e_convergencia(t_global, fadiga_suave, tempo_fadiga, limites_treino, historico)
+    plotar_curva_fadiga(t_alinhado, fadiga_suave_treino, tempo_fadiga, historico)
 
     print("\n[✓] Pipeline finalizado com sucesso!")
 
