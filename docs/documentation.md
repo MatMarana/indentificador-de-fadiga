@@ -1,37 +1,17 @@
-# Partes de Atenção do Código
+# Documentação sobre as funções do código
 
-## O que eu estava pensando?
-
-A fadiga não aparece claramente olhando apenas para a amplitude do EMG.
-
-Por isso decidi extrair características que representam diferentes aspectos fisiológicos do sinal.
-
----
-
-## RMS
+## Calcular as Métricas de Fadiga
 
 ```python
 calcular_rms()
 ```
 
-Mede a potência média do sinal.
-
 Durante a fadiga:
-
-* mais unidades motoras são recrutadas;
 * RMS tende a aumentar.
-
----
-
-## MAV
 
 ```python
 calcular_mav()
 ```
-
-Valor absoluto médio.
-
-Representa o nível geral de ativação muscular.
 
 ---
 
