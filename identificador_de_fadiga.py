@@ -9,6 +9,7 @@
 =============================================================================
 """
 
+import random
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -21,6 +22,18 @@ import matplotlib.pyplot as plt
 from scipy.signal import spectrogram, windows
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy.ndimage import gaussian_filter1d
+
+SEED = 42
+
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # ── Configurações globais ─────────────────────────────────────────────────────
 
@@ -266,9 +279,6 @@ def detectar_ponto_fadiga(
         score = 0.85 * fadiga_n + 0.15 * grad_n
         idx   = int(np.argmax(score))
 
-    elif metodo == "derivada":
-        idx = int(np.argmax(np.gradient(fadiga_suave)))
-
     elif metodo == "limiar":
         limiar = np.percentile(fadiga_suave, percentil_limiar)
         acima  = np.where(fadiga_suave >= limiar)[0]
@@ -294,9 +304,9 @@ class RedeNeuralFadiga(nn.Module):
         super().__init__()
         self.rede = nn.Sequential(
             nn.Linear(n_features, 128), nn.Tanh(),
-            nn.Linear(128, 64),         nn.Tanh(),
-            nn.Linear(64, 32),          nn.Tanh(),
-            nn.Linear(32, 1),           nn.Sigmoid(),
+            nn.Linear(128, 128),         nn.Tanh(),
+            nn.Linear(128, 64),          nn.Tanh(),
+            nn.Linear(64, 1),           
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -755,10 +765,11 @@ def main():
 
         with torch.no_grad():
             pred_t = modelo(X_t_tensor).numpy().flatten()
+            pred_t = (pred_t - pred_t.min()) / (pred_t.max() - pred_t.min() + 1e-8)
 
         pred_t_suave = (
             pd.Series(pred_t)
-            .rolling(9, center=True, min_periods=1)
+            .rolling(7, center=True, min_periods=1)
             .mean()
             .values
         )
