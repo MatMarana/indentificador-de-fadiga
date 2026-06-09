@@ -1,76 +1,70 @@
 # Documentação sobre as funções do código
 
-## Calcular as Métricas de Fadiga
+No ínício do código foi determinado a SEED no torch, isso foi feito para que os resultados sejam reproduzíveis.
+Ela faz com que a PINN inicie o treinamento sempre com a mesma sequência de pesos, evitando variabilidade.
+
+## Determinação de Constantes
+Foram estipuladas as seguintes constantes:
 
 ```python
-calcular_rms()
+JANELA_SEGUNDOS = 5
+EPOCHS          = 2000
+LR              = 1e-3
+LAMBDA_MONO     = 0.0
+LAMBDA_REG      = 0.01
 ```
 
-Durante a fadiga:
-* RMS tende a aumentar.
+Sendo em ordem, o tamanho das janelas temporais, as épocas de treinamento e por último
+- **LR** (*Learning Rate*)**:** Define a taxa de aprendizado da Rede Neural, será usada como peso no otmizador ADAM
+- **LAMBDA_MONO** (*Controle de Perda da Monotonicidade*)**:** É utilizada para penalizar a Rede caso a fadiga caia no treinamento
+- **LAMBDA_REG** (*Controla a regularização da PINN*)**:** Com o valor de finido a rede opta pelas curvas mais suaves
+
+## Métricas para análise de fadiga
+
+### RMS
+> Root Mean Square
+
+Realiza a raiz quadrada da média dos quadrados do sinal na janela
+Tende a aumentar conforme a fadiga aumenta
 
 ```python
-calcular_mav()
+def calcular_rms(janela: np.ndarray) -> float:
+    return np.sqrt(np.mean(janela ** 2))
 ```
 
----
+### MAV
+> Mean Absolute Value
 
-## ZCR
+É obtida através da média dos valores absolutos da janela
+Tende a aumentar conforme a fadigda cresce
 
 ```python
-calcular_zero_crossing_rate()
+def calcular_mav(janela: np.ndarray) -> float:
+    return np.mean(np.abs(janela))
 ```
 
-Conta quantas vezes o sinal cruza o zero.
+### ZCR
+> Zero Crossing Rate
 
-Durante a fadiga:
+Mede a quantidade de cruzamentos do sinal em relação ao zero.
+Diminui conforme o aumento da fadiga.
 
-* o conteúdo de alta frequência diminui;
-* o ZCR tende a cair.
-
----
+```python
+def calcular_zero_crossing_rate(janela: np.ndarray) -> float:
+    sinais = np.sign(janela)
+    sinais[sinais == 0] = 1
+    zcr = np.sum(sinais[:-1] != sinais[1:])
+    return zcr / len(janela)
+```
 
 ## FFT
-
-```python
-calcular_features_fft()
-```
+> Transformata de Fourier
 
 Foi utilizada FFT para observar o comportamento espectral do EMG.
-
 As features escolhidas foram:
-
-### Frequência Média (MNF)
-
-```python
-fft_media
-```
-
-Tende a diminuir com a fadiga.
-
----
-
-### Frequência Mediana (MDF)
-
-```python
-fft_mediana
-```
-
-Uma das métricas mais utilizadas na literatura para análise de fadiga.
-
-Também tende a diminuir.
-
----
-
-### Desvio Espectral
-
-```python
-fft_desvio
-```
-
-Representa a dispersão das frequências.
-
----
+- Frequência Média (MNF)
+- Frequência Mediana (MDef)
+- Desvio Espectral
 
 ## Espectrograma
 
