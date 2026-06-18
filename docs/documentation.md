@@ -17,7 +17,7 @@ LAMBDA_REG      = 0.01
 Sendo em ordem, o tamanho das janelas temporais, as épocas de treinamento e por último
 - **LR** (*Learning Rate*)**:** Define a taxa de aprendizado da Rede Neural, será usada como peso no otmizador ADAM
 - **LAMBDA_MONO** (*Controle de Perda da Monotonicidade*)**:** É utilizada para penalizar a Rede caso a fadiga caia no treinamento
-- **LAMBDA_REG** (*Controla a regularização da PINN*)**:** Com o valor de finido a rede opta pelas curvas mais suaves
+- **LAMBDA_REG** (*Controla a regularização da PINN*)**:** Com o valor definido a rede opta pelas curvas mais suaves
 
 ## Métricas para análise de fadiga
 
@@ -66,7 +66,9 @@ As features escolhidas foram:
 - Frequência Mediana (MDef)
 - Desvio Espectral
 
-As features espectrais MNF e MDF foram escolhidas por serem biomarcadores clássicos de fadiga muscular, refletindo o deslocamento do conteúdo espectral para frequências mais baixas. O Desvio Espectral foi adicionado para capturar alterações na dispersão da energia do espectro, fornecendo informação complementar à posição média e mediana das frequências. Dessa forma, o conjunto de features descreve não apenas onde a energia está concentrada, mas também como ela está distribuída ao longo do espectro.
+As features espectrais MNF e MDF foram escolhidas por serem biomarcadores clássicos de fadiga muscular, refletindo o deslocamento do conteúdo espectral para frequências mais baixas. O Desvio Espectral foi adicionado para capturar alterações na dispersão da energia do espectro, fornecendo informação complementar à posição média e mediana das frequências. 
+
+Dessa forma, o conjunto de features descreve não apenas onde a energia está concentrada, mas também como ela está distribuída ao longo do espectro.
 
 ```python
 def calcular_features_fft(janela: np.ndarray, fs: float) -> tuple:
@@ -103,7 +105,9 @@ Foram extraídas:
 - **Energia espectral:** utilizada para quantificar a intensidade média da atividade elétrica muscular no domínio da frequência.
 - **Frequência dominante:** empregada para identificar a região espectral de maior concentração de energia.
 
-O espectrograma foi utilizado para analisar a evolução temporal do conteúdo espectral do sinal EMG. Diferentemente da FFT, que fornece uma visão global das frequências presentes em uma janela, o espectrograma permite observar como a distribuição de energia varia ao longo do tempo. A partir dele foram extraídas a energia espectral média e a frequência dominante, que auxiliam na identificação das alterações fisiológicas associadas ao processo de fadiga muscular.
+O espectrograma foi utilizado para analisar a evolução temporal do conteúdo espectral do sinal EMG. Diferentemente da FFT, que fornece uma visão global das frequências presentes em uma janela, o espectrograma permite observar como a distribuição de energia varia ao longo do tempo. 
+
+A partir dele foram extraídas a energia espectral média e a frequência dominante, que auxiliam na identificação das alterações fisiológicas associadas ao processo de fadiga muscular.
 
 ```python
         f, _, Sxx = spectrogram(
@@ -120,7 +124,9 @@ O espectrograma foi utilizado para analisar a evolução temporal do conteúdo e
 
 ## Construção do Índice Fisiológico
 
-Como não existe uma medida direta e contínua de fadiga muscular disponível nos dados coletados, foi construído um índice fisiológico de fadiga baseado em características temporais e espectrais do sinal EMG. Esse índice foi utilizado como referência supervisora durante o treinamento da PINN, permitindo que a rede aprendesse uma representação contínua do processo de fadiga a partir de conhecimento fisiológico previamente estabelecido na literatura
+Como não existe uma medida direta e contínua de fadiga muscular disponível nos dados coletados, foi construído um índice fisiológico de fadiga baseado em características temporais e espectrais do sinal EMG. 
+
+Esse índice foi utilizado como referência supervisora durante o treinamento da PINN, permitindo que a rede aprendesse uma representação contínua do processo de fadiga a partir de conhecimento fisiológico previamente estabelecido na literatura
 
 ### Calculando o índice de fadiga fisiologico
 
@@ -157,118 +163,40 @@ def detectar_ponto_fadiga(
     return idx, float(tempo[idx])
 ```
 
-O método híbrido funciona combinando duas informações extraídas da curva de fadiga suavizada: o próprio nível de fadiga e a sua taxa de crescimento ao longo do tempo. Inicialmente, é calculado o gradiente da curva, que representa a velocidade com que a fadiga está aumentando em cada instante. Em seguida, tanto a curva de fadiga quanto o gradiente são normalizados para uma escala entre 0 e 1, permitindo que sejam comparados e combinados adequadamente. A pontuação final é obtida por meio de uma média ponderada, na qual 85% do peso é atribuído ao nível de fadiga e 15% ao gradiente. Dessa forma, o algoritmo não procura apenas o ponto onde a fadiga é máxima, mas também considera regiões em que ela está crescendo de forma relevante. Por fim, o instante correspondente ao maior valor dessa pontuação híbrida é identificado como o ponto de fadiga muscular detectado pelo método.
+O método híbrido funciona combinando duas informações extraídas da curva de fadiga suavizada: o próprio nível de fadiga e a sua taxa de crescimento ao longo do tempo. Inicialmente, é calculado o gradiente da curva, que representa a velocidade com que a fadiga está aumentando em cada instante. 
 
-# Parte 4 — PINN
+Em seguida, tanto a curva de fadiga quanto o gradiente são normalizados para uma escala entre 0 e 1, permitindo que sejam comparados e combinados adequadamente. A pontuação final é obtida por meio de uma média ponderada, na qual 85% do peso é atribuído ao nível de fadiga e 15% ao gradiente. 
 
-## O que eu estava pensando?
+Dessa forma, o algoritmo não procura apenas o ponto onde a fadiga é máxima, mas também considera regiões em que ela está crescendo de forma relevante. Por fim, o instante correspondente ao maior valor dessa pontuação híbrida é identificado como o ponto de fadiga muscular detectado pelo método.
 
+## PINN
+> Physics-Informed Neural Network
+
+### Arquitetura
+
+```python
+nn.Linear(n_features, 128), nn.Tanh(),
+nn.Linear(128, 128), nn.Tanh(),
+nn.Linear(128, 64), nn.Tanh(),
+nn.Linear(64, 1),
+```
+
+A rede recebe como entrada todas as features extraídas do EMG e produz como saída um único valor: o índice de fadiga.
+
+Foram utilizadas três camadas ocultas porque o relacionamento entre as features do EMG e a fadiga não é linear. O RMS, a MAV, a MDF e as demais métricas interagem entre si de forma complexa, e uma rede muito pequena poderia não ter capacidade suficiente para aprender esses padrões.
+
+Os 128 neurônios das primeiras camadas fornecem capacidade para aprender relações complexas, enquanto a redução para 64 neurônios na última camada ajuda a condensar as informações antes da saída.
 Uma rede neural comum aprende apenas pelos dados.
 
-Eu queria inserir conhecimento fisiológico.
+### Ativação
 
-Por isso escolhi uma PINN.
+Função **Tanh**
 
----
+A função de ativação Tangente Hiperbólica (Tanh) foi utilizada nas camadas ocultas da rede neural por produzir saídas suaves e continuamente diferenciáveis no intervalo entre -1 e 1. 
 
-# Arquitetura
+Essa característica é especialmente importante em Physics-Informed Neural Networks (PINNs), pois o treinamento envolve o cálculo de derivadas de primeira e segunda ordem da saída da rede.
 
-```text
-Entrada
- ↓
-128 neurônios
- ↓
-128 neurônios
- ↓
-64 neurônios
- ↓
-Saída
-```
-
-Ativação:
-
-```python
-Tanh
-```
-
-Motivo:
-
-PINNs funcionam melhor com funções suaves e diferenciáveis.
-
----
-
-# Entrada da Rede
-
-A entrada contém:
-
-```text
-32 features EMG
-+
-tempo normalizado
-```
-
----
-
-# Saída
-
-A rede produz:
-
-```text
-Índice de fadiga previsto
-```
-
----
-
-# Função de Perda
-
-## L_data
-
-```python
-MSE(predição, score fisiológico)
-```
-
-Faz a rede aprender o comportamento observado.
-
----
-
-## L_mono
-
-```python
-relu(-df/dt)
-```
-
-Penaliza quedas na fadiga.
-
-Pensamento:
-
-Fisicamente a fadiga deveria crescer ao longo do exercício.
-
----
-
-## L_reg
-
-```python
-(d²f/dt²)²
-```
-
-Penaliza oscilações bruscas.
-
-Objetivo:
-
-Produzir curvas mais suaves e fisiologicamente plausíveis.
-
----
-
-## Loss Final
-
-```python
-L_total =
-L_data
-+ λmono * L_mono
-+ λreg * L_reg
-```
-
----
+### Função de Loss
 
 # Treinamento
 
@@ -322,35 +250,6 @@ Coeficiente de determinação.
 
 Avalia o quanto a PINN consegue explicar o comportamento do score fisiológico.
 
----
-
-# Gráficos Gerados
-
-## Métricas Temporais
-
-```text
-RMS
-MAV
-ZCR
-MNF
-MDF
-Desvio espectral
-```
-
----
-
-## FFT
-
-Mostra a distribuição espectral do sinal.
-
----
-
-## Espectrograma
-
-Mostra a evolução temporal das frequências.
-
----
-
 ## Curva de Fadiga
 
 Compara:
@@ -363,17 +262,5 @@ Também mostra:
 * Fadiga fisiológica
 * Fadiga prevista pela PINN
 
----
-
-# Interpretação dos Resultados
-
-Idealmente espera-se que:
-
-* a curva da PINN siga a curva fisiológica;
-* o instante de fadiga previsto seja próximo do fisiológico;
-* o erro temporal seja pequeno;
-* o R² seja elevado.
-
-Diferenças pequenas são esperadas porque a PINN tenta generalizar padrões presentes em múltiplas coletas.
 
 
