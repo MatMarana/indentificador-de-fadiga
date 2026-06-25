@@ -65,7 +65,7 @@ EMG_NOMES = [
 JANELA_SEGUNDOS = 5
 EPOCHS          = 2000
 LR              = 1e-3
-LAMBDA_MONO     = 0.0
+LAMBDA_MONO     = 0.01
 LAMBDA_REG      = 0.01
 
 plt.rcParams.update({
