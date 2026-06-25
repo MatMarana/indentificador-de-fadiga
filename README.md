@@ -62,3 +62,6 @@ Detecção de Fadiga
    ↓
 Gráficos e Métricas
 ```
+--- 
+
+Caso queira saber sobre o funcionamendo de alguma parte específica leia o arquivo [Documentation.md](https://github.com/MatMarana/indentificador-de-fadiga/blob/main/docs/documentation.md)
