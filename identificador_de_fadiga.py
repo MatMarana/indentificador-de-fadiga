@@ -241,7 +241,6 @@ def detectar_ponto_fadiga(
     fadiga_suave: np.ndarray,
     tempo: np.ndarray,
     metodo: str = "hibrido",
-    percentil_limiar: float = 75.0,
 ) -> tuple[int, float]:
     """
     Detecta o instante de fadiga no score suavizado.
@@ -252,11 +251,6 @@ def detectar_ponto_fadiga(
         grad_n   = (grad - grad.min()) / (grad.max() - grad.min() + 1e-8)
         score = 0.85 * fadiga_n + 0.15 * grad_n
         idx   = int(np.argmax(score))
-
-    elif metodo == "limiar":
-        limiar = np.percentile(fadiga_suave, percentil_limiar)
-        acima  = np.where(fadiga_suave >= limiar)[0]
-        idx    = int(acima[0]) if len(acima) > 0 else int(np.argmax(fadiga_suave))
 
     else:
         raise ValueError(f"Método desconhecido: {metodo!r}")
