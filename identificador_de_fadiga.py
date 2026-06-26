@@ -35,8 +35,6 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# ── Configurações globais ─────────────────────────────────────────────────────
-
 ARQUIVOS_TREINO = [
     "ColetaMateus2Rep.csv",
     "MateusDia2Rep2.csv",
@@ -85,18 +83,11 @@ plt.rcParams.update({
 
 CORES_MUSCULO = ["#58A6FF", "#3FB950", "#F78166", "#D2A8FF"]
 
-
-# =============================================================================
-# BLOCO 1 — EXTRAÇÃO DE FEATURES
-# =============================================================================
-
 def calcular_rms(janela: np.ndarray) -> float:
     return np.sqrt(np.mean(janela ** 2))
 
-
 def calcular_mav(janela: np.ndarray) -> float:
     return np.mean(np.abs(janela))
-
 
 def calcular_zero_crossing_rate(janela: np.ndarray) -> float:
     sinais = np.sign(janela)
@@ -104,42 +95,31 @@ def calcular_zero_crossing_rate(janela: np.ndarray) -> float:
     zcr = np.sum(sinais[:-1] != sinais[1:])
     return zcr / len(janela)
 
-
 def calcular_features_fft(janela: np.ndarray, fs: float) -> tuple:
     # Features espectrais via rfft com janela Hamming e suavização gaussiana.
 
     N = len(janela)
-
-    # 1. Janela de Hamming 
     janela_win = janela * np.hamming(N)
-
-    # 2. rfft 
     S     = np.fft.rfft(janela_win)
     freqs = np.fft.rfftfreq(N, d=1 / fs)
 
-    # 3. Magnitude + suavização gaussiana
     magnitude = np.abs(S)
     magnitude_suave = gaussian_filter1d(magnitude, sigma=2)
 
-    # 4. Faixa útil do EMG: 20–250 Hz
     mask      = (freqs >= 20) & (freqs <= 250)
     freqs     = freqs[mask]
     magnitude = magnitude_suave[mask]
 
     mag_total = np.sum(magnitude) + 1e-8
 
-    # MNF 
     freq_media = np.sum(freqs * magnitude) / mag_total
 
-    # MDF 
     cum_energia  = np.cumsum(magnitude)
     freq_mediana = freqs[np.searchsorted(cum_energia, cum_energia[-1] / 2)]
 
-    # Desvio padrão espectral 
     desvio = np.std(magnitude)
 
     return freq_media, freq_mediana, desvio
-
 
 def calcular_features_janela(emg: np.ndarray, fs: float, segundos: float) -> dict:
     amostras_por_janela = int(segundos * fs)
@@ -208,11 +188,6 @@ def extrair_features_df(df: pd.DataFrame, tempo: np.ndarray) -> tuple:
 
     return np.hstack(features_canais), tempo_m
 
-
-# =============================================================================
-# BLOCO 2 — ÍNDICE DE FADIGA FISIOLÓGICO
-# =============================================================================
-
 def calcular_indice_fadiga_fisiologico(
     features_por_canal: list,
     pesos: dict | None = None,
@@ -262,7 +237,6 @@ def calcular_indice_fadiga_fisiologico(
     )
     return fadiga_score, fadiga_suave
 
-
 def detectar_ponto_fadiga(
     fadiga_suave: np.ndarray,
     tempo: np.ndarray,
@@ -289,12 +263,6 @@ def detectar_ponto_fadiga(
 
     return idx, float(tempo[idx])
 
-
-
-# =============================================================================
-# BLOCO 3 — PINN
-# =============================================================================
-
 class RedeNeuralFadiga(nn.Module):
     """
     Rede neural densa com ativações Tanh.
@@ -311,7 +279,6 @@ class RedeNeuralFadiga(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.rede(x)
-
 
 def pinn_loss(
     modelo: nn.Module,
@@ -334,7 +301,6 @@ def pinn_loss(
     x      = x.clone().requires_grad_(True)
     y_pred = modelo(x)
 
-    # ── Gradiente de primeira ordem ──────────────────────────────────────────
     grads_1 = torch.autograd.grad(
         outputs=y_pred,
         inputs=x,
@@ -343,11 +309,8 @@ def pinn_loss(
         retain_graph=True,
     )[0]
 
-    # Somente a derivada em relação ao tempo (última coluna)
-    # Positiva = fadiga crescendo; negativa = fadiga diminuindo (viola física)
     df_dt = grads_1[:, -1].reshape(-1, 1)
 
-    # ── Gradiente de segunda ordem (só no tempo) ─────────────────────────────
     grads_2 = torch.autograd.grad(
         outputs=df_dt,
         inputs=x,
@@ -357,7 +320,6 @@ def pinn_loss(
     )[0]
     d2f_dt2 = grads_2[:, -1].reshape(-1, 1)
 
-    # ── Perdas ───────────────────────────────────────────────────────────────
     L_data  = nn.MSELoss()(y_pred, y)
     L_mono  = torch.mean(torch.relu(-df_dt))
     L_reg   = torch.mean(d2f_dt2 ** 2)
@@ -401,10 +363,6 @@ def treinar_modelo(
     return modelo, historico
 
 
-# =============================================================================
-# BLOCO 4 — AVALIAÇÃO E UTILITÁRIOS
-# =============================================================================
-
 def carregar_e_extrair(arquivos: list, pasta: str = "dados_coleta_mateus") -> tuple:
     """Lê múltiplos CSVs e empilha X (features) e t (tempo médio)."""
     X_list, t_list = [], []
@@ -442,17 +400,13 @@ def gerar_score_para_arquivos(
 def normalizar_tempo(t: np.ndarray) -> np.ndarray:
     return (t - t.min()) / (t.max() - t.min())
 
-
 def avaliar_conjunto(
     modelo: nn.Module,
     X_tensor: torch.Tensor,
     y_true: np.ndarray,
     nome: str,
 ) -> np.ndarray:
-    """
-    Avalia o modelo com métricas de regressão (MSE, MAE, R²).
-    Retorna as predições para uso externo (ex.: plots).
-    """
+
     with torch.no_grad():
         pred = modelo(X_tensor).numpy().flatten()
 
@@ -476,11 +430,7 @@ def comparar_pinn_vs_fisiologico(
     tempo: np.ndarray,
     nome_arquivo: str,
 ) -> None:
-    """
-    Compara o método fisiológico com a PINN:
-      - MSE entre as curvas
-      - Diferença temporal entre os pontos de fadiga detectados
-    """
+
     erro_curva = np.mean((fadiga_suave - pred) ** 2)
 
     idx_fisio, t_fisio = detectar_ponto_fadiga(fadiga_suave, tempo, metodo="hibrido")
@@ -493,11 +443,6 @@ def comparar_pinn_vs_fisiologico(
     print(f"  Fadiga PINN em        : {t_pinn:.2f} s  (janela #{idx_pinn})")
     print(f"  Erro temporal         : {erro_tempo:.2f} s")
 
-
-# =============================================================================
-# BLOCO 5 — GRÁFICOS (apenas arquivos de teste)
-# =============================================================================
-
 def plotar_metricas_simples(
     t: np.ndarray,
     features_por_canal: list,
@@ -505,7 +450,7 @@ def plotar_metricas_simples(
     nomes_canais: list,
     nome_arquivo: str,
 ) -> None:
-    """Métricas temporais e espectrais por canal"""
+
     metricas_labels = [
         ("rms",         "RMS (V)"),
         ("mav",         "MAV (V)"),
@@ -555,7 +500,7 @@ def plotar_fft_e_espectrograma(
     tempo_fadiga: float,
     fs_t
 ) -> None:
-    """FFT e Espectrograma de um único arquivo de teste."""
+
     Fs       = fs_t
     Tjan     = 1.0
     nwin     = int(Tjan * Fs)
@@ -624,15 +569,11 @@ def plotar_curva_fadiga_teste(
     historico: dict,
     nome_arquivo: str,
 ) -> None:
-    """
-    Curva de fadiga do arquivo de teste: fisiológico vs PINN + convergência.
-    O ponto de fadiga detectado por cada método é marcado separadamente.
-    """
+
     fig, axes = plt.subplots(1, 3, figsize=(20, 4))
     fig.suptitle(f"PINN — Detecção de Fadiga | {nome_arquivo}",
                  fontsize=13, fontweight="bold")
 
-    # Índice fisiológico
     ax1 = axes[0]
     ax1.plot(t, fadiga_suave, color="#58A6FF", linewidth=1.8, label="Score fisiológico")
     ax1.axvline(tempo_fadiga_fisio, color="#FF4B4B", linestyle="--",
@@ -644,7 +585,6 @@ def plotar_curva_fadiga_teste(
     ax1.legend(fontsize=8)
     ax1.grid(True)
 
-    # Predição PINN
     ax2 = axes[1]
     ax2.plot(t, pred_pinn, color="#3FB950", linewidth=1.8, label="Predição PINN")
     ax2.plot(t, fadiga_suave, color="#58A6FF", linewidth=1.0,
@@ -660,7 +600,6 @@ def plotar_curva_fadiga_teste(
     ax2.legend(fontsize=8)
     ax2.grid(True)
 
-    # Convergência
     ax3 = axes[2]
     epocas = range(len(historico["total"]))
     ax3.plot(epocas, historico["total"], color="#58A6FF", label="L total",  linewidth=1.5)
@@ -682,19 +621,13 @@ def plotar_curva_fadiga_teste(
     print(f"Salvo: {fname}")
 
 
-# =============================================================================
-# BLOCO 6 — PIPELINE PRINCIPAL
-# =============================================================================
-
 def main():
 
-    # ─── 1. FEATURES + SCORE DE TREINO ───────────────────────────────────────
     print("\n[1/4] Extraindo features e score de TREINO...")
 
     X, t = carregar_e_extrair(ARQUIVOS_TREINO)
     y_fisio, t_score = gerar_score_para_arquivos(ARQUIVOS_TREINO)
 
-    # Garantir alinhamento (ambos percorrem os mesmos arquivos na mesma ordem)
     n = min(len(X), len(y_fisio))
     X        = X[:n]
     t        = t[:n]
@@ -703,18 +636,15 @@ def main():
     print(f"      X shape    : {X.shape}")
     print(f"      y_fisio len: {len(y_fisio)}")
 
-    # O tempo normalizado ainda entra como feature auxiliar
     t_norm   = normalizar_tempo(t).reshape(-1, 1)
     X_aug    = np.hstack([X, t_norm])
 
     X_tensor = torch.tensor(X_aug,             dtype=torch.float32)
     y_tensor = torch.tensor(y_fisio.reshape(-1, 1), dtype=torch.float32)
 
-    # ─── 2. TREINAMENTO DA PINN ───────────────────────────────────────────────
     print("\n[2/4] Treinando PINN...")
     modelo, historico = treinar_modelo(X_tensor, y_tensor)
 
-    # ─── 3. VALIDAÇÃO E TESTE ─────────────────────────────────────────────────
     print("\n[3/4] Avaliando modelo...")
 
     for nome_conj, arquivos in [
@@ -731,7 +661,6 @@ def main():
 
         avaliar_conjunto(modelo, X_ev_tensor, score_ev[:n_ev], nome_conj)
 
-    # ─── 4. GRÁFICOS — apenas arquivos de teste ───────────────────────────────
     print("\n[4/4] Gerando gráficos dos arquivos de TESTE...")
 
     nomes_curtos = [nome.split(":")[0].replace("R ", "") for nome in EMG_NOMES]
@@ -743,7 +672,6 @@ def main():
         tempo_t  = df_teste["X [s]"].values
         fs_t     = 1.0 / np.mean(np.diff(tempo_t))
 
-        # Features e score fisiológico deste arquivo de teste
         feats_teste = [
             calcular_features_janela(df_teste[nome].values, fs_t, JANELA_SEGUNDOS)
             for nome in EMG_NOMES
@@ -751,12 +679,10 @@ def main():
         score_t, fadiga_suave_t = calcular_indice_fadiga_fisiologico(feats_teste)
         t_janelas_t = feats_teste[0]["tempo_medio"]
 
-        # Detecção fisiológica no arquivo de teste
         idx_fisio, tempo_fadiga_fisio = detectar_ponto_fadiga(
             fadiga_suave_t, t_janelas_t, metodo="hibrido"
         )
 
-        # Predição da PINN no arquivo de teste
         t_norm_t  = normalizar_tempo(t_janelas_t).reshape(-1, 1)
         X_t, _    = extrair_features_df(df_teste, tempo_t)
         n_t       = min(len(X_t), len(score_t))
@@ -774,24 +700,19 @@ def main():
             .values
         )
 
-        # Detecção pela PINN
         idx_pinn, tempo_fadiga_pinn = detectar_ponto_fadiga(
             pred_t_suave, t_janelas_t[:n_t], metodo="hibrido"
         )
-        # Comparação PINN vs Fisiológico
         comparar_pinn_vs_fisiologico(
             fadiga_suave_t[:n_t], pred_t_suave, t_janelas_t[:n_t], nome_arq
         )
 
-        # Plot 1: métricas por canal
         plotar_metricas_simples(
             t_janelas_t, feats_teste, tempo_fadiga_fisio, nomes_curtos, nome_arq
         )
 
-        # Plot 2: FFT e espectrograma
         plotar_fft_e_espectrograma(df_teste, nome_arq, tempo_fadiga_fisio, fs_t)
 
-        # Plot 3: curvas de fadiga + convergência
         plotar_curva_fadiga_teste(
             t_janelas_t[:n_t],
             fadiga_suave_t[:n_t],
@@ -805,7 +726,6 @@ def main():
     print("\nFinalizado com sucesso!")
 
 
-# =============================================================================
 
 if __name__ == "__main__":
     main()
