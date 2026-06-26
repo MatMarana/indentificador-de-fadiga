@@ -570,7 +570,7 @@ def plotar_curva_fadiga_teste(
     nome_arquivo: str,
 ) -> None:
 
-    fig, axes = plt.subplots(1, 3, figsize=(20, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(20, 4))
     fig.suptitle(f"PINN — Detecção de Fadiga | {nome_arquivo}",
                  fontsize=13, fontweight="bold")
 
@@ -599,19 +599,6 @@ def plotar_curva_fadiga_teste(
     ax2.set_title("PINN vs Fisiológico")
     ax2.legend(fontsize=8)
     ax2.grid(True)
-
-    ax3 = axes[2]
-    epocas = range(len(historico["total"]))
-    ax3.plot(epocas, historico["total"], color="#58A6FF", label="L total",  linewidth=1.5)
-    ax3.plot(epocas, historico["data"],  color="#3FB950", label="L data",   linewidth=1.2, alpha=0.85)
-    ax3.plot(epocas, historico["mono"],  color="#F78166", label="L mono",   linewidth=1.2, alpha=0.85)
-    ax3.plot(epocas, historico["reg"],   color="#D2A8FF", label="L reg",    linewidth=1.2, alpha=0.85)
-    ax3.set_yscale("log")
-    ax3.set_xlabel("Época")
-    ax3.set_ylabel("Loss (log)")
-    ax3.set_title("Convergência da PINN")
-    ax3.legend(fontsize=8)
-    ax3.grid(True)
 
     plt.tight_layout()
     fname = f"fadiga_pinn_{nome_arquivo.replace('.csv','')}.png"
